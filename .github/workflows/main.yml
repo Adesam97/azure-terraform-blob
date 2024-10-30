@@ -1,0 +1,163 @@
+name: Deploy NPM App to Azure
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - development
+  pull_request:
+    branches: 
+      - main
+      - staging
+      - development
+
+env:
+  NODE_VERSION: '15'
+  TERRAFORM_VERSION: '1.5.0'
+
+jobs:
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install Dependencies
+      run: npm install 
+
+    - name: ESLint
+      run: npm run lint
+
+    - name: install Prettier
+      run: npm install --save-dev prettier
+
+    - name: install prettier
+      run: npm install --global prettier
+
+    - name: write with prettier
+      run: prettier --write "src/**/*.js"
+
+    - name: Prettier
+      run: npm run prettier
+
+    - name: Test
+      run: CI=true npm run test
+      
+    - name: Build application
+      run: npm run build
+      
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build
+        path: build/
+  deploy:
+    needs: build-and-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+      
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build
+        path: build/
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Determine Storage Account
+      id: storage
+      run: |
+        if [[ ${{ github.ref }} == 'refs/heads/main' ]]; then
+        echo "storage_account=prodappstorageacct" >> $GITHUB_OUTPUT
+        elif [[ ${{ github.ref }} == 'refs/heads/staging' ]]; then
+        echo "storage_account=stageappstorageacct" >> $GITHUB_OUTPUT
+        else
+        echo "storage_account=devappstorageacct7f69" >> $GITHUB_OUTPUT
+        fi
+    - name: Determine Environment
+      id: env
+      run: |
+        if [[ ${{ github.ref }} == 'refs/heads/main' ]]; then
+          echo "environment=prod" >> $GITHUB_OUTPUT
+        elif [[ ${{ github.ref }} == 'refs/heads/staging' ]]; then
+          echo "environment=stage" >> $GITHUB_OUTPUT
+        else
+          echo "environment=dev" >> $GITHUB_OUTPUT
+        fi
+    - name: Run terraform plan and apply
+      env:
+          TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          TF_VAR_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TF_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      run: |
+        if [[ ${{ github.ref }} == 'refs/heads/main' ]]; then
+        cd terraform/production/
+        
+        elif [[ ${{ github.ref }} == 'refs/heads/staging' ]]; then
+        cd terraform/staging/
+        
+        else
+        cd terraform/development/
+        fi
+        terraform init \
+            -backend-config="key=${{ steps.env.outputs.environment }}.tfstate" \
+            -backend-config="storage_account_name=${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="resource_group_name=${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            -backend-config="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
+            -backend-config="client_id=${{ secrets.AZURE_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.AZURE_CLIENT_SECRET }}" \
+            -backend-config="tenant_id=${{ secrets.AZURE_TENANT_ID }}"
+        
+        terraform plan \
+            -var="environment=${{ steps.env.outputs.environment }}" \
+            -out=tfplan
+        
+        terraform apply -auto-approve tfplan
+    - name: Get Storage Account Key
+      id: get_key
+      run: |
+        STORAGE_KEY=$(az storage account keys list --account-name ${{ steps.storage.outputs.storage_account }} --query '[0].value' -o tsv)
+        echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+        
+    - name: Upload to Blob Storage
+      uses: azure/cli@v1
+      with:
+        inlineScript: |
+          az storage blob upload-batch \
+            --account-name ${{ steps.storage.outputs.storage_account }} \
+            --auth-mode key \
+            --account-key ${{ steps.get_key.outputs.storage_key }} \
+            --destination '$web' \
+            --source build/ \
+            --overwrite true
+    - name: Purge CDN Endpoint (Production Only)
+      if: github.ref == 'refs/heads/main'
+      uses: azure/cli@v1
+      with:
+        inlineScript: |
+          az cdn endpoint purge \
+            --resource-group prod-rg \
+            --profile-name prod-cdn-profile \
+            --name prod-cdn-endpoint \
+            --content-paths '/*'
