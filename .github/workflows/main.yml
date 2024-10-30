@@ -1,0 +1,61 @@
+name: Deploy NPM App to Azure
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - development
+  pull_request:
+    branches: 
+      - main
+      - staging
+      - development
+
+env:
+  NODE_VERSION: '15'
+  TERRAFORM_VERSION: '1.5.0'
+
+jobs:
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install Dependencies
+      run: npm install 
+
+    - name: ESLint
+      run: npm run lint
+
+    - name: install Prettier
+      run: npm install --save-dev prettier
+
+    - name: install prettier
+      run: npm install --global prettier
+
+    - name: write with prettier
+      run: prettier --write "src/**/*.js"
+
+    - name: Prettier
+      run: npm run prettier
+
+    - name: Test
+      run: CI=true npm run test
+      
+    - name: Build application
+      run: npm run build
+      
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build
+        path: build/
