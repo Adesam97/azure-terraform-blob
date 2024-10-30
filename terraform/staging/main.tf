@@ -77,5 +77,5 @@ output "stage_website_url" {
 }
 
 output "stage_app_service_url" {
-  value = azurerm_app_service.stage.default_hostname
+  value = azurerm_app_service.stage.default_site_hostname
 }
