@@ -72,5 +72,5 @@ output "prod_website_url" {
 }
 
 output "prod_cdn_url" {
-  value = azurerm_cdn_endpoint.prod.hostname
+  value = azurerm_cdn_endpoint.prod.fqdn
 }
