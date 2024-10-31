@@ -26,7 +26,7 @@ resource "azurerm_storage_account" "prod" {
   }
 
   network_rules {
-    default_action = "allow"
+    default_action = "Allow"
   }
 
   tags = {
